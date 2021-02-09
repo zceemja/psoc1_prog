@@ -1,4 +1,4 @@
-# Cypress PSoC1 Programmer
+# Cypress PSoC® 1 Programmer
 
 This allows to program PSoC1 devices using atmega168 (Arduino Nano) board.
 
