@@ -25,7 +25,7 @@ uint16_t dev_id = 0;
 uint8_t ram_blk[64];
 
 // firmware version
-const uint16_t fw = 0x0001;
+const uint16_t fw = 0x0002;
 
 
 void data_send(const uint8_t *data, uint16_t len) {
@@ -298,49 +298,65 @@ void loop() {
   uint8_t command;
   if(Serial.readBytes(&command, 1) > 0) {
     if(command == 'd') {
-      Serial.println(dev_id, HEX);
+      Serial.println(dev_id, HEX); // get device ID
     }
-    else if(command == 'i') {
+    else if(command == 'D') {  // get device ID (in binary)
+      Serial.write(dev_id);
+      Serial.write(dev_id >> 8);
+      Serial.println(); 
+    }
+    else if(command == 'i') {  // reinitialise
       initialise();
       dev_id = read_id();
       Serial.println();
     }
-    else if(command == 'r') {
+    else if(command == 'r') {  // reset_device
       uint8_t args[2] = {0x00, 0x80};
       Serial.readBytes(args, 2);
       read_block(args[0], args[1]);
       Serial.println();
     }
-    else if(command == 'e') {
+    else if(command == 'e') {  // erase_memory
       erase_all_memory();
       Serial.println();
     }
-    else if(command == 'w') {
+    else if(command == 'w') {  // write ram block to device with next provided byte being device memory offset
       // Write block
       if(Serial.readBytes(&command, 1) > 0) {
         write_block(dev_id, command);
       }
       Serial.println();
     }
-    else if(command == 'f') {
+    else if(command == 'f') {   // return this firmware identification
       Serial.println(fw, HEX);
     }
-    else if(command == 'c') {
+    else if(command == 'F') {   // return this firmware identification (in binary)
+      Serial.write(fw);
+      Serial.write(fw >> 8);
+      Serial.println();
+    }
+    else if(command == 'c') {   // Return checksum
       Serial.println(read_checksum(dev_id), HEX);
     }
-    else if(command == 's') {
+    else if(command == 'C') {   // Return checksum (in binary)
+      uint16_t devid = read_checksum(dev_id);
+      Serial.write(devid);
+      Serial.write(devid >> 8);
+      Serial.println();
+    }
+    else if(command == 's') {    // Read ram block
       Serial.write(ram_blk, 64);
       Serial.println();
     }
-    else if(command == 't') {
+    else if(command == 't') {    // Write to ram block
       Serial.readBytes(ram_blk, 64);
       Serial.println();
     }
-    else if(command == 'x') {
+    else if(command == 'x') {    // Write secure memory
       write_secure();
       Serial.println();
     }
-    else if(command == 'a') {
+    else if(command == 'a') {    // Reset
       reset_device();
       Serial.println();
     }

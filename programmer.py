@@ -1,3 +1,5 @@
+import sys
+import os
 import serial
 from array import array
 
@@ -72,43 +74,60 @@ class PSoC1Prog:
     }
 
     def __init__(self, serial_port):
-        self.ser = serial.Serial(port=serial_port, baudrate=9600, timeout=0.1, write_timeout=1)
+        self.ser = serial.Serial(port=serial_port, baudrate=9600, timeout=2, write_timeout=2)
         self.ser.write(b'\n')
         x = self.ser.read_until(b'> ')
+        buf1 = os.urandom(64)
+        self._write_blk(buf1)
+        buf2 = self._read_blk()
+        if buf1 != buf2:
+            print("Sent: " + buf1.hex(), file=sys.stderr)
+            print("Recv: " + buf2.hex(), file=sys.stderr)
+            raise ValueError("Programmer self-test failed!")
+
+    def _wait(self):
+        x = self.ser.read(4)
+        if len(x) == 0:
+            raise ValueError("Chip response timeout")
+        if x != b'\r\n> ':
+            raise ValueError("Programmer resturned unexpected result: " + x.hex())
 
     def reinitialise(self):
         self.ser.write(b'i')
-        res = self.ser.read_until('\r\n> ')
+        self._wait()
 
     def reset_device(self):
-        self.ser.write(b'r')
-        res = self.ser.read_until('\r\n> ')
+        self.ser.write(b'a')
+        self._wait()
 
     def get_device_id(self):
-        self.ser.write(b'd')
-        res = self.ser.read_until('\r\n> ')
-        return int(res[:-4], 16)
+        self.ser.write(b'D')
+        res = self.ser.read(2)
+        self._wait()
+        return int.from_bytes(res, 'little')
 
     def get_firmware_id(self):
-        self.ser.write(b'f')
-        res = self.ser.read_until('\r\n> ')
-        return res[:-4]
+        self.ser.write(b'F')
+        res = self.ser.read(2)
+        self._wait()
+        return int.from_bytes(res, 'little')
 
     def erase_memory(self):
         self.ser.write(b'e')
-        self.ser.read_until('\r\n> ')
+        self._wait()
 
     def read_checksum(self):
-        self.ser.write(b'c')
-        res = self.ser.read_until('\r\n> ')
-        return int(res[:-4], 16).to_bytes(2, 'big')
+        self.ser.write(b'C')
+        res = self.ser.read(2)
+        self._wait()
+        return res[::-1]
 
     def read_memory(self, n=64, offset=0x80):
         # read n x 64 memory blocks
         blocks = b''
         for i in range(n):
             self.ser.write(b'r' + array('B', [i, offset]).tobytes())
-            x = self.ser.read_until('\r\n> ')
+            self._wait()
             block = self._read_blk()
             blocks += block
             print(f"\rReading 0x{i.to_bytes(1, 'big').hex()} [{(i+1)/64*100:.2f}%]", end='')
@@ -124,13 +143,13 @@ class PSoC1Prog:
             raise ValueError("Data is not 64 bytes")
         self.ser.write(b't')
         self.ser.write(data)
-        x = self.ser.read_until('\r\n> ')
+        self._wait()
         return
 
     def _read_blk(self):
         self.ser.write(b's')
         blk = self.ser.read(64)
-        x = self.ser.read_until('\r\n> ')
+        self._wait()
         return blk
 
     def write_program(self, data):
@@ -138,18 +157,20 @@ class PSoC1Prog:
         for i in range(len(data)//64):
             self._write_blk(data[i*64:(i+1)*64])
             self.ser.write(b'w' + array('B', [i]).tobytes())
-            x = self.ser.read_until('\r\n> ')
-            print(f"\rWriting 0x{i.to_bytes(1, 'big').hex()} [{(i+1)/64*100:.2f}%]", end='')
+            self._wait()
+            print(f"\rWriting 0x{i.to_bytes(1, 'big').hex()} [{(i+1)/64*100:.2f}%]", end='', file=sys.stderr)
         print('')
 
     def write_secure(self, data):
         self._write_blk(data)
         self.ser.write(b'x')
-        x = self.ser.read_until('\r\n> ')
+        self._wait()
 
     def close(self):
         self.ser.close()
 
+def log(text):
+    print("PSoC1_Prog: " + text, file=sys.stderr)
 
 if __name__ == '__main__':
     import argparse
@@ -157,7 +178,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("port", help="Serial port")
-    parser.add_argument("cmd", choices=['flash', 'checksum', 'device', 'read', 'erase', 'reset'], 
+    parser.add_argument("cmd", choices=['flash', 'checksum', 'device', 'read', 'erase', 'reset', 'fw'], 
         help="Command to run\n" +
         "flash - write .hex to device\n" +
         "checksum - returns program checksum from device\n" +
@@ -165,6 +186,7 @@ if __name__ == '__main__':
         "read - dumps device program to file\n" +
         "erase - deletes all devices program memory\n" +
         "reset - restarts device\n"
+        "fw - returns programmer firmware version\n"
     )
     parser.add_argument("-i", "--input", help="Input intel hex file for flashing")
     parser.add_argument("-o", "--output", help="Output binary for memory dump")
@@ -177,47 +199,53 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     prog = PSoC1Prog(args.port)
+    log("programmer initialised")
     if args.init:
         prog.reinitialise()
     if args.cmd == 'flash':
         if args.input is None:
-            print("PSoC1_Prog: input is not specified", file=sys.stderr)
+            log("input is not specified")
             exit(1)
         ifile = Program(args.input)
-        print("PSoC1_Prog: erasing memory")
+        log("erasing memory")
         prog.erase_memory()
-        print("PSoC1_Prog: writing program")
+        log("writing program")
         prog.write_program(ifile.program)
-        print("PSoC1_Prog: writing secure")
+        log("writing secure")
         prog.write_secure(ifile.secure)
-        print("PSoC1_Prog: checking checksum")
+        log("checking checksum")
         csum = prog.read_checksum()
         if csum != ifile.checksum:
-            print(f"PSoC1_Prog: checksum mismatch, device={csum.hex()} file={ifile.checksum.hex()}", file=sys.stderr)
+            log(f"checksum mismatch, device={csum.hex()} file={ifile.checksum.hex()}")
             exit(1)
         if args.read:
             mem_data = prog.read_memory()
             if mem_data != ifile.program:
-                print(f"PSoC1_Prog: written program does not match one on device", file=sys.stderr)
+                log(f"written program does not match one on device")
                 exit(1)
-        print("PSoC1_Prog: success")
+        log("success")
     elif args.cmd == 'checksum':
+        if args.input is not None:
+            log("file checksum: " + Program(args.input).checksum.hex())
         print(prog.read_checksum().hex())
     elif args.cmd == 'device':
         print(prog.get_device_name())
     elif args.cmd == 'read':
         if args.output is None:
-            print("PSoC1_Prog: output is not specified", file=sys.stderr)
+            log("output is not specified")
             exit(1)
         with open(args.output, 'wb') as f:
             f.write(prog.read_memory(args.count, args.offset))
-        print("PSoC1_Prog: success")
+        log("success")
     elif args.cmd == 'erase':
         prog.erase_memory()
-        print("PSoC1_Prog: success")
+        log("success")
     elif args.cmd == 'reset':
         prog.reset_device()
         exit(0)
+        log("success")
+    elif args.cmd == 'fw':
+        print(prog.get_firmware_id())
     if args.reset:
         prog.reset_device()
     exit(0)
